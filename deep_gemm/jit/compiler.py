@@ -17,6 +17,7 @@ from .runtime import Runtime, RuntimeCache
 runtime_cache = RuntimeCache()
 
 
+@functools.lru_cache(maxsize=None)
 def hash_to_hex(s: str) -> str:
     md5 = hashlib.md5()
     md5.update(s.encode('utf-8'))
@@ -116,10 +117,11 @@ class Compiler:
 
     @staticmethod
     def flags() -> List[str]:
-        cpp_standard = int(os.getenv('DG_JIT_OVERRIDE_CPP_STANDARD', 20))
+        # cpp_standard = int(os.getenv('DG_JIT_OVERRIDE_CPP_STANDARD', 20))
+        cpp_standard = 20
         return [f'-std=c++{cpp_standard}',
-                '--ptxas-options=--register-usage-level=10' +
-                (',--verbose' if 'DG_JIT_PTXAS_VERBOSE' in os.environ else ''),
+                '--ptxas-options=--register-usage-level=10',
+                # + (',--verbose' if 'DG_JIT_PTXAS_VERBOSE' in os.environ else ''),
                 # Suppress some unnecessary warnings, such as unused variables for certain `constexpr` branch cases
                 '--diag-suppress=39,161,174,177,186,940']
 
@@ -130,20 +132,27 @@ class Compiler:
     @classmethod
     def build(cls, name: str, code: str, runtime_cls: Type[Runtime], kwargs: Dict[str, Any] = None) -> Runtime:
         # Compiler flags
-        flags = cls.flags()
+        import torch
 
+        # torch.cuda.nvtx.range_push(f"get flags")
+        flags = cls.flags()
+        # torch.cuda.nvtx.range_pop()
+
+        # torch.cuda.nvtx.range_push(f"get name and path")
         # Build signature
-        enable_sass_opt = cls.__version__() <= (12, 8) and not int(os.getenv('DG_JIT_DISABLE_FFMA_INTERLEAVE', 0))
+        enable_sass_opt = cls.__version__() <= (12, 8)
         signature = f'{name}$${get_deep_gemm_version()}$${cls.signature()}$${flags}$${enable_sass_opt}$${code}'
         name = f'kernel.{name}.{hash_to_hex(signature)}'
         path = os.path.join(get_cache_dir(), name)
+        # torch.cuda.nvtx.range_pop()
 
+        # torch.cuda.nvtx.range_push(f"check runtime cache or file system hit")
         # Check runtime cache or file system hit
         global runtime_cache
+        # torch.cuda.nvtx.range_push(f"check runtime cache or file system hit")
         cached_runtime = runtime_cache.get(path, runtime_cls, name, kwargs)
+        # torch.cuda.nvtx.range_pop()
         if cached_runtime is not None:
-            if int(os.getenv('DG_JIT_DEBUG', 0)):
-                print(f'Using cached JIT runtime {name} during build')
             return cached_runtime
 
         # Compile into a temporary CU file
@@ -280,5 +289,4 @@ class NVRTCCompiler(Compiler):
 
 
 def build(name: str, code: str, runtime_cls: Type[Runtime], kwargs: Dict[str, Any] = None) -> Runtime:
-    compiler_cls = NVRTCCompiler if int(os.getenv('DG_JIT_USE_NVRTC', 0)) else NVCCCompiler
-    return compiler_cls.build(name, code, runtime_cls, kwargs)
+    return NVCCCompiler.build(name, code, runtime_cls, kwargs)

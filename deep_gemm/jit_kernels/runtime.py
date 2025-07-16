@@ -1,12 +1,13 @@
 import ctypes
-import os
 import enum
-import torch
-import cuda.bindings.driver as cbd
+import os
 from typing import Any, Dict, Tuple
 
-from .utils import get_tma_aligned_size
+import cuda.bindings.driver as cbd
+import torch
+
 from ..jit.runtime import Runtime
+from .utils import get_tma_aligned_size
 
 
 class GemmType(enum.Enum):
@@ -62,6 +63,7 @@ def make_2d_tma_copy_desc(t: torch.Tensor,
                           smem_dims: Tuple[cbd.cuuint32_t, cbd.cuuint32_t],
                           swizzle_type: cbd.CUtensorMapSwizzle) -> cbd.CUtensorMap:
     tensor_dtype = tmap_type_map[t.dtype]
+    # print(f"make_2d_tma_desc, gmem_dims: {gmem_dims}, gmem_outer_stride: {gmem_outer_stride}, smem_dims: {smem_dims}, swizzle_type: {swizzle_type}")
     res, tensor_map = cbd.cuTensorMapEncodeTiled(
         tensor_dtype,
         2,
@@ -138,7 +140,7 @@ class FP8GemmRuntime(Runtime):
         super().__init__(path)
 
     @staticmethod
-    def generate(kwargs: Dict[str, Any]) -> str:
+    def generate(N, K, BLOCK_M, BLOCK_N, BLOCK_K, BLOCK_N_PADDING, SWIZZLE_D_MODE, NUM_GROUPS, NUM_STAGES, NUM_TMA_THREADS, NUM_MATH_THREADS_PER_GROUP, NUM_TMA_MULTICAST, IS_TMA_MULTICAST_ON_A, GEMM_TYPE) -> str:
         code = f'''
 #ifdef __CUDACC_RTC__
 #include <deep_gemm/nvrtc_std.cuh>
@@ -156,76 +158,122 @@ using namespace deep_gemm;
 
 static void __instantiate_kernel() {{
     auto ptr = reinterpret_cast<void*>(&fp8_gemm_kernel<
-        {kwargs['N']},
-        {kwargs['K']},
-        {kwargs['BLOCK_M']},
-        {kwargs['BLOCK_N']},
-        {kwargs['BLOCK_K']},
-        {kwargs['BLOCK_N_PADDING']},
-        {kwargs['SWIZZLE_D_MODE']},
-        {kwargs['NUM_GROUPS']},
-        {kwargs['NUM_STAGES']},
-        {kwargs['NUM_TMA_THREADS']},
-        {kwargs['NUM_MATH_THREADS_PER_GROUP']},
-        {kwargs['NUM_TMA_MULTICAST']},
-        {'true' if kwargs['IS_TMA_MULTICAST_ON_A'] else 'false'},
-        GemmType::{kwargs['GEMM_TYPE']}
+        {N},
+        {K},
+        {BLOCK_M},
+        {BLOCK_N},
+        {BLOCK_K},
+        {BLOCK_N_PADDING},
+        {SWIZZLE_D_MODE},
+        {NUM_GROUPS},
+        {NUM_STAGES},
+        {NUM_TMA_THREADS},
+        {NUM_MATH_THREADS_PER_GROUP},
+        {NUM_TMA_MULTICAST},
+        {'true' if IS_TMA_MULTICAST_ON_A else 'false'},
+        GemmType::{GEMM_TYPE}
       >);
 }};
 '''
-        if int(os.getenv('DG_JIT_DEBUG', 0)):
-            print(f'Generated FP8 GEMM code:\n{code}')
+        # if int(os.getenv('DG_JIT_DEBUG', 0)):
+        #     print(f'Generated FP8 GEMM code:\n{code}')
         return code
 
     # noinspection PyMethodOverriding
     @staticmethod
-    def launch(kernel: cbd.CUkernel, kwargs: Dict[str, Any]) -> cbd.CUresult:
-        num_tma_threads = 128
-        num_math_threads_per_group = 128
+    def launch(kernel, args) -> cbd.CUresult:
+        # def launch(kernel, kwargs: Dict[str, Any]) -> cbd.CUresult:
+        # torch.cuda.nvtx.range_push("import deepgemm_runtime")
+        import deepgemm_runtime
 
-        result = cbd.cuKernelSetAttribute(cbd.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                                          kwargs['SMEM_SIZE'], kernel, cbd.CUdevice(kwargs['DEVICE_INDEX']))[0]
-        assert result == cbd.CUresult.CUDA_SUCCESS, f'Failed to set max dynamic shared memory size: {result}'
-
-        attr_val = cbd.CUlaunchAttributeValue()
-        attr_val.clusterDim.x = kwargs['NUM_TMA_MULTICAST']
-        attr_val.clusterDim.y = 1
-        attr_val.clusterDim.z = 1
-        attr = cbd.CUlaunchAttribute()
-        attr.id = cbd.CUlaunchAttributeID.CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION
-        attr.value = attr_val
-
-        config = cbd.CUlaunchConfig()
-        config.numAttrs = 1
-        config.attrs = [attr]
-        config.gridDimX = kwargs['NUM_SMS']
-        config.gridDimY = 1
-        config.gridDimZ = 1
-        config.blockDimX = get_num_threads_per_sm(num_tma_threads, num_math_threads_per_group, kwargs['BLOCK_M'])
-        config.blockDimY = 1
-        config.blockDimZ = 1
-        config.sharedMemBytes = kwargs['SMEM_SIZE']
-        config.hStream = kwargs['STREAM']
-
-        arg_values = (
-            kwargs['SCALES_B'].data_ptr(),
-            kwargs['GROUPED_LAYOUT'].data_ptr(),
-            kwargs['M'],
-            kwargs['TENSOR_MAP_A'],
-            kwargs['TENSOR_MAP_B'],
-            kwargs['TENSOR_MAP_SCALES_A'],
-            kwargs['TENSOR_MAP_D'],
+        # torch.cuda.nvtx.range_pop()
+        # f_launch = kwargs["F_LAUNCH"]
+        # print(f"Start launch, kernel: {hex(kernel)}")
+        # torch.cuda.nvtx.range_push("launch kernel")
+        deepgemm_runtime.launch_fp8_gemm(
+            kernel,
+            *args,
+            # kwargs['A'],
+            # kwargs['B'],
+            # kwargs['D'],
+            # kwargs['SCALES_A'],
+            # kwargs['SCALES_B'],
+            # kwargs['GROUPED_LAYOUT'],
+            # kwargs['M'],
+            # kwargs['N'],
+            # kwargs['K_UNALIGNED'],
+            # kwargs['MN'],
+            # kwargs['STRIDE_AM'],
+            # kwargs['STRIDE_BN'],
+            # kwargs['STRIDE_DM'],
+            # kwargs['BLOCK_M'],
+            # kwargs['BLOCK_N'],
+            # kwargs['BLOCK_K'],
+            # kwargs['BLOCK_MN'],
+            # kwargs['NUM_GROUPS'],
+            # kwargs['SWIZZLE_D_MODE'],
+            # kwargs['NUM_SMS'],
+            # kwargs['NUM_TMA_MULTICAST'],
+            # kwargs['SMEM_SIZE'],
+            # kwargs['DEVICE_INDEX'],
+            # kwargs['STREAM'],
         )
-        arg_types = (
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_uint32,
-            None,
-            None,
-            None,
-            None,
-        )
-        return cbd.cuLaunchKernelEx(config, kernel, (arg_values, arg_types), 0)
+        # torch.cuda.nvtx.range_pop()
+        # print(f"End launch")
+        # num_tma_threads = 128
+        # num_math_threads_per_group = 128
+
+        # torch.cuda.nvtx.range_push("set max dynamic shared memory size")
+        # result = cbd.cuKernelSetAttribute(cbd.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+        #                                   kwargs['SMEM_SIZE'], kernel, cbd.CUdevice(kwargs['DEVICE_INDEX']))[0]
+        # assert result == cbd.CUresult.CUDA_SUCCESS, f'Failed to set max dynamic shared memory size: {result}'
+        # torch.cuda.nvtx.range_pop()
+
+        # torch.cuda.nvtx.range_push("set cluster dimension")
+        # attr_val = cbd.CUlaunchAttributeValue()
+        # attr_val.clusterDim.x = kwargs['NUM_TMA_MULTICAST']
+        # attr_val.clusterDim.y = 1
+        # attr_val.clusterDim.z = 1
+        # attr = cbd.CUlaunchAttribute()
+        # attr.id = cbd.CUlaunchAttributeID.CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION
+        # attr.value = attr_val
+        # torch.cuda.nvtx.range_pop()
+
+        # torch.cuda.nvtx.range_push("set launch config")
+        # config = cbd.CUlaunchConfig()
+        # config.numAttrs = 1
+        # config.attrs = [attr]
+        # config.gridDimX = kwargs['NUM_SMS']
+        # config.gridDimY = 1
+        # config.gridDimZ = 1
+        # config.blockDimX = get_num_threads_per_sm(num_tma_threads, num_math_threads_per_group, kwargs['BLOCK_M'])
+        # config.blockDimY = 1
+        # config.blockDimZ = 1
+        # config.sharedMemBytes = kwargs['SMEM_SIZE']
+        # config.hStream = kwargs['STREAM']
+        # torch.cuda.nvtx.range_pop()
+
+        # torch.cuda.nvtx.range_push("set launch kernel")
+        # arg_values = (
+        #     kwargs['SCALES_B'].data_ptr(),
+        #     kwargs['GROUPED_LAYOUT'].data_ptr(),
+        #     kwargs['M'],
+        #     kwargs['TENSOR_MAP_A'],
+        #     kwargs['TENSOR_MAP_B'],
+        #     kwargs['TENSOR_MAP_SCALES_A'],
+        #     kwargs['TENSOR_MAP_D'],
+        # )
+        # arg_types = (
+        #     ctypes.c_void_p,
+        #     ctypes.c_void_p,
+        #     ctypes.c_uint32,
+        #     None,
+        #     None,
+        #     None,
+        #     None,
+        # )
+        # torch.cuda.nvtx.range_pop()
+        # return cbd.cuLaunchKernelEx(config, kernel, (arg_values, arg_types), 0)
 
 
 class FP8WGradGemmRuntime(Runtime):
@@ -233,7 +281,7 @@ class FP8WGradGemmRuntime(Runtime):
         super().__init__(path)
 
     @staticmethod
-    def generate(kwargs: Dict[str, Any]) -> str:
+    def generate(M, N, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, NUM_LAST_STAGES, NUM_TMA_THREADS, NUM_MATH_THREADS_PER_GROUP, NUM_TMA_MULTICAST, IS_TMA_MULTICAST_ON_A) -> str:
         code = f'''
 #ifdef __CUDACC_RTC__
 #include <deep_gemm/nvrtc_std.cuh>
@@ -251,68 +299,76 @@ using namespace deep_gemm;
 
 static void __instantiate_kernel() {{
     auto ptr = reinterpret_cast<void*>(&fp8_wgrad_gemm_kernel<
-        {kwargs['M']},
-        {kwargs['N']},
-        {kwargs['BLOCK_M']},
-        {kwargs['BLOCK_N']},
-        {kwargs['BLOCK_K']},
-        {kwargs['NUM_STAGES']},
-        {kwargs['NUM_LAST_STAGES']},
-        {kwargs['NUM_TMA_THREADS']},
-        {kwargs['NUM_MATH_THREADS_PER_GROUP']},
-        {kwargs['NUM_TMA_MULTICAST']},
-        {'true' if kwargs['IS_TMA_MULTICAST_ON_A'] else 'false'}
+        {M},
+        {N},
+        {BLOCK_M},
+        {BLOCK_N},
+        {BLOCK_K},
+        {NUM_STAGES},
+        {NUM_LAST_STAGES},
+        {NUM_TMA_THREADS},
+        {NUM_MATH_THREADS_PER_GROUP},
+        {NUM_TMA_MULTICAST},
+        {'true' if IS_TMA_MULTICAST_ON_A else 'false'}
       >);
 }};
 '''
-        if int(os.getenv('DG_JIT_DEBUG', 0)):
-            print(f'Generated FP8 WGrad GEMM code:\n{code}')
+        # if int(os.getenv('DG_JIT_DEBUG', 0)):
+        #     print(f'Generated FP8 WGrad GEMM code:\n{code}')
         return code
 
     # noinspection PyMethodOverriding
     @staticmethod
-    def launch(kernel: cbd.CUkernel, kwargs: Dict[str, Any]) -> cbd.CUresult:
-        num_tma_threads = 128
-        num_math_threads_per_group = 128
+    def launch(kernel, args) -> cbd.CUresult:
+        # torch.cuda.nvtx.range_push("import deepgemm_runtime")
+        import deepgemm_runtime
 
-        result = cbd.cuKernelSetAttribute(cbd.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                                          kwargs['SMEM_SIZE'], kernel, cbd.CUdevice(kwargs['DEVICE_INDEX']))[0]
-        assert result == cbd.CUresult.CUDA_SUCCESS, f'Failed to set max dynamic shared memory size: {result}'
+        # torch.cuda.nvtx.range_pop()
+        # torch.cuda.nvtx.range_push("launch kernel")
+        deepgemm_runtime.launch_wgrad_fp8_gemm(kernel, *args)
+        # torch.cuda.nvtx.range_pop()
 
-        attr_val = cbd.CUlaunchAttributeValue()
-        attr_val.clusterDim.x = kwargs['NUM_TMA_MULTICAST']
-        attr_val.clusterDim.y = 1
-        attr_val.clusterDim.z = 1
-        attr = cbd.CUlaunchAttribute()
-        attr.id = cbd.CUlaunchAttributeID.CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION
-        attr.value = attr_val
+        # num_tma_threads = 128
+        # num_math_threads_per_group = 128
 
-        config = cbd.CUlaunchConfig()
-        config.numAttrs = 1
-        config.attrs = [attr]
-        config.gridDimX = kwargs['NUM_SMS']
-        config.gridDimY = 1
-        config.gridDimZ = 1
-        config.blockDimX = get_num_threads_per_sm(num_tma_threads, num_math_threads_per_group, kwargs['BLOCK_M'])
-        config.blockDimY = 1
-        config.blockDimZ = 1
-        config.sharedMemBytes = kwargs['SMEM_SIZE']
-        config.hStream = kwargs['STREAM']
+        # result = cbd.cuKernelSetAttribute(cbd.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+        #                                   kwargs['SMEM_SIZE'], kernel, cbd.CUdevice(kwargs['DEVICE_INDEX']))[0]
+        # assert result == cbd.CUresult.CUDA_SUCCESS, f'Failed to set max dynamic shared memory size: {result}'
 
-        arg_values = (
-            kwargs['K'],
-            kwargs['TENSOR_MAP_A'],
-            kwargs['TENSOR_MAP_B'],
-            kwargs['TENSOR_MAP_SCALES_A'],
-            kwargs['TENSOR_MAP_SCALES_B'],
-            kwargs['TENSOR_MAP_D'],
-        )
-        arg_types = (
-            ctypes.c_uint32,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        return cbd.cuLaunchKernelEx(config, kernel, (arg_values, arg_types), 0)
+        # attr_val = cbd.CUlaunchAttributeValue()
+        # attr_val.clusterDim.x = kwargs['NUM_TMA_MULTICAST']
+        # attr_val.clusterDim.y = 1
+        # attr_val.clusterDim.z = 1
+        # attr = cbd.CUlaunchAttribute()
+        # attr.id = cbd.CUlaunchAttributeID.CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION
+        # attr.value = attr_val
+
+        # config = cbd.CUlaunchConfig()
+        # config.numAttrs = 1
+        # config.attrs = [attr]
+        # config.gridDimX = kwargs['NUM_SMS']
+        # config.gridDimY = 1
+        # config.gridDimZ = 1
+        # config.blockDimX = get_num_threads_per_sm(num_tma_threads, num_math_threads_per_group, kwargs['BLOCK_M'])
+        # config.blockDimY = 1
+        # config.blockDimZ = 1
+        # config.sharedMemBytes = kwargs['SMEM_SIZE']
+        # config.hStream = kwargs['STREAM']
+
+        # arg_values = (
+        #     kwargs['K'],
+        #     kwargs['TENSOR_MAP_A'],
+        #     kwargs['TENSOR_MAP_B'],
+        #     kwargs['TENSOR_MAP_SCALES_A'],
+        #     kwargs['TENSOR_MAP_SCALES_B'],
+        #     kwargs['TENSOR_MAP_D'],
+        # )
+        # arg_types = (
+        #     ctypes.c_uint32,
+        #     None,
+        #     None,
+        #     None,
+        #     None,
+        #     None,
+        # )
+        # return cbd.cuLaunchKernelEx(config, kernel, (arg_values, arg_types), 0)

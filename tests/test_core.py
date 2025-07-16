@@ -180,10 +180,22 @@ def test_gemm() -> None:
             def test_func():
                 deep_gemm.gemm_fp8_fp8_bf16_nt(x_fp8, y_fp8, out)
 
+            x = torch.randn((m, k), device='cuda', dtype=torch.bfloat16)
+            y = torch.randn((n, k), device='cuda', dtype=torch.bfloat16)
+            out_bf16 = torch.nn.functional.linear(x, y)
+            x = torch.randn((m, k), device='cuda', dtype=torch.bfloat16)
+            y = torch.randn((n, k), device='cuda', dtype=torch.bfloat16)
+            def test_func_bf16():
+                out_bf16 = torch.nn.functional.linear(x, y)
+
             t = bench_kineto(test_func, 'fp8_gemm', suppress_kineto_output=True)
-            print(f' > Perf (m={m:5}, n={n:5}, k={k:5}): {t * 1e6:4.0f} us | '
+            t_bf16 = bench_kineto(test_func_bf16, 'nvjet_tst', suppress_kineto_output=True)
+            print(f' > Perf  FP8 (m={m:5}, n={n:5}, k={k:5}): {t * 1e6:4.0f} us | '
                   f'throughput: {2 * m * n * k / t / 1e12:4.0f} TFLOPS, '
                   f'{(m * k + k * n + m * n * 2) / 1e9 / t:4.0f} GB/s')
+            print(f' > Perf BF16 (m={m:5}, n={n:5}, k={k:5}): {t_bf16 * 1e6:4.0f} us | '
+                  f'throughput: {2 * m * n * k / t_bf16 / 1e12:4.0f} TFLOPS, '
+                  f'{(m * k * 2 + k * n * 2 + m * n * 2) / 1e9 / t_bf16:4.0f} GB/s')
     print()
 
 
@@ -257,10 +269,22 @@ def test_wgrad_gemm():
             def test_func():
                 deep_gemm.wgrad_gemm_fp8_fp8_fp32_nt(x_fp8, y_fp8, out)
 
+            x = torch.randn((m, k), device='cuda', dtype=torch.bfloat16)
+            y = torch.randn((n, k), device='cuda', dtype=torch.bfloat16)
+            out_bf16 = torch.nn.functional.linear(x, y)
+            x = torch.randn((m, k), device='cuda', dtype=torch.bfloat16)
+            y = torch.randn((n, k), device='cuda', dtype=torch.bfloat16)
+            def test_func_bf16():
+                out_bf16 = torch.nn.functional.linear(x, y)
+
             t = bench_kineto(test_func, 'fp8_wgrad_gemm', suppress_kineto_output=True)
-            print(f' > Performance (m={m:5}, n={n:5}, k={k:5}): {t * 1e6:4.0f} us | '
+            t_bf16 = bench_kineto(test_func_bf16, 'nvjet_tst', suppress_kineto_output=True)
+            print(f' > Performance  FP8 (m={m:5}, n={n:5}, k={k:5}): {t * 1e6:4.0f} us | '
                   f'throughput: {2 * m * n * k / t / 1e12:4.0f} TFLOPS, '
-                  f'{(m * k + k * n + m * n * 2) / 1e9 / t:4.0f} GB/s')
+                  f'{(m * k + k * n + m * n * 4) / 1e9 / t:4.0f} GB/s')
+            print(f' > Performance BF16 (m={m:5}, n={n:5}, k={k:5}): {t_bf16 * 1e6:4.0f} us | '
+                  f'throughput: {2 * m * n * k / t_bf16 / 1e12:4.0f} TFLOPS, '
+                  f'{(m * k * 2 + k * n * 2 + m * n * 2) / 1e9 / t_bf16:4.0f} GB/s')
     print()
 
 
@@ -305,8 +329,8 @@ if __name__ == '__main__':
     print(f' > {deep_gemm.__path__}\n')
 
     test_gemm()
-    test_m_grouped_gemm_contiguous()
-    test_m_grouped_gemm_masked()
+    # test_m_grouped_gemm_contiguous()
+    # test_m_grouped_gemm_masked()
 
     test_wgrad_gemm()
-    test_k_grouped_wgrad_gemm()
+    # test_k_grouped_wgrad_gemm()

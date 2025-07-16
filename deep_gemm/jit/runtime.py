@@ -33,15 +33,15 @@ class Runtime:
     def launch(kernel: cbd.CUkernel, kwargs: Dict[str, Any]) -> cbd.CUresult:
         raise NotImplemented
 
-    def __call__(self, **kwargs) -> cbd.CUresult:
+    def __call__(self, *args, **kwargs) -> cbd.CUresult:
         # Load CUBIN
+        # torch.cuda.nvtx.range_push("load cubin")
         if self.kernel is None:
+            import deepgemm_runtime
             start_time = time.time_ns()
 
             # Load CUBIN
             path = bytes(os.path.join(self.path, 'kernel.cubin'), 'utf-8')
-            result, self.lib = cbd.cuLibraryLoadFromFile(path, [], [], 0, [], [], 0)
-            assert result == cbd.CUresult.CUDA_SUCCESS, f'Failed to load library: {result}'
 
             # Extract the kernel name
             # TODO: use `cuda-bindings` API to do this (requires at least 12.8)
@@ -54,17 +54,28 @@ class Runtime:
                             if line.startswith('STT_FUNC') and not check_illegal(line)]
             assert len(kernel_names) == 1, f'Too many kernels in the library: {kernel_names}'
 
-            # Load kernel from the library
-            result, self.kernel = cbd.cuLibraryGetKernel(self.lib, bytes(kernel_names[0], encoding='utf-8'))
-            assert result == cbd.CUresult.CUDA_SUCCESS, f'Failed to load kernel: {result}'
+            self.kernel = deepgemm_runtime.load_kernel(path, kernel_names[0])
+            # result, self.lib = cbd.cuLibraryLoadFromFile(path, [], [], 0, [], [], 0)
+            # assert result == cbd.CUresult.CUDA_SUCCESS, f'Failed to load library: {result}'
+            # # Load kernel from the library
+            # result, self.kernel = cbd.cuLibraryGetKernel(self.lib, bytes(kernel_names[0], encoding='utf-8'))
+            # assert result == cbd.CUresult.CUDA_SUCCESS, f'Failed to load kernel: {result}'
 
             end_time = time.time_ns()
             elapsed_time = (end_time - start_time) / 1e6
             if int(os.getenv('DG_JIT_DEBUG', 0)):
                 print(f'Loading JIT runtime {self.path} took {elapsed_time:.2f} ms.')
+        # torch.cuda.nvtx.range_pop()
 
         # noinspection PyArgumentList
-        return self.launch(self.kernel, kwargs)
+        if len(args) > 0:
+            # torch.cuda.nvtx.range_push("runtime launch with args")
+            self.launch(self.kernel, args)
+            # torch.cuda.nvtx.range_pop()
+        else:
+            # torch.cuda.nvtx.range_push("runtime launch with kwargs")
+            self.launch(self.kernel, kwargs)
+            # torch.cuda.nvtx.range_pop()
 
     def __del__(self) -> None:
         if self.lib is not None:
@@ -88,16 +99,17 @@ class RuntimeCache:
             return self.cache[path]
 
         # Already compiled
-        use_cache = force_enable_cache or not int(os.getenv('DG_JIT_DISABLE_CACHE', 0))
+        # use_cache = force_enable_cache or not int(os.getenv('DG_JIT_DISABLE_CACHE', 0))
+        use_cache = True
         if use_cache and os.path.exists(path) and Runtime.is_path_valid(path):
-            # Print heuristic for the first time
-            if name and (int(os.getenv('DG_JIT_DEBUG', 0)) or int(os.getenv('DG_PRINT_CONFIGS', 0))):
-                simplified_kwargs = dict()
-                for key, value in kwargs.items() if kwargs is not None else dict().items():
-                    value = f'torch.Tensor<{value.dtype}>' if isinstance(value, torch.Tensor) else value
-                    value = f'cuda.bindings.driver.CUtensorMap' if isinstance(value, cbd.CUtensorMap) else value
-                    simplified_kwargs[key] = value
-                print(f'Put kernel {name} with {simplified_kwargs} into runtime cache')
+            # # Print heuristic for the first time
+            # if name and (int(os.getenv('DG_JIT_DEBUG', 0)) or int(os.getenv('DG_PRINT_CONFIGS', 0))):
+            #     simplified_kwargs = dict()
+            #     for key, value in kwargs.items() if kwargs is not None else dict().items():
+            #         value = f'torch.Tensor<{value.dtype}>' if isinstance(value, torch.Tensor) else value
+            #         value = f'cuda.bindings.driver.CUtensorMap' if isinstance(value, cbd.CUtensorMap) else value
+            #         simplified_kwargs[key] = value
+            #     print(f'Put kernel {name} with {simplified_kwargs} into runtime cache')
 
             runtime = runtime_cls(path)
             self.cache[path] = runtime

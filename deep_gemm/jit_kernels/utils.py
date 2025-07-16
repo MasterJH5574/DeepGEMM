@@ -103,7 +103,7 @@ def get_col_major_tma_aligned_tensor(x: torch.Tensor) -> torch.Tensor:
         return x.squeeze(0) if remove_dim else x
 
     # Normal layout requires transposing
-    aligned_x = torch.transpose(torch.empty((b, n, aligned_m), device=x.device, dtype=x.dtype), 1, 2)
-    aligned_x[:, :m, :] = x
-    aligned_x = aligned_x[:, :m, :]
+    aligned_x = torch.empty((b, n, aligned_m), device=x.device, dtype=x.dtype)
+    aligned_x[:, :, :m] = x.transpose(1, 2)
+    aligned_x = aligned_x[:, :, :m].transpose(1, 2)
     return aligned_x.squeeze(0) if remove_dim else aligned_x

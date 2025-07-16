@@ -2,8 +2,10 @@ import os
 import setuptools
 import shutil
 import subprocess
+import torch
 from setuptools.command.build_py import build_py
 from setuptools.command.develop import develop
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 jit_include_dirs = ('deep_gemm/include/deep_gemm', )
@@ -12,9 +14,20 @@ third_party_include_dirs = (
     'third-party/cutlass/include/cutlass',
 )
 
+nvcc_compile_args = [
+    "-O3",
+    "--compiler-options=-fPIC",
+    "-gencode",
+    "arch=compute_90a,code=sm_90a",
+]
+
+cuda_lib_dir = os.environ.get("CUDA_HOME", "/usr/local/cuda") + "/lib64"
+torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+
 
 class PostDevelopCommand(develop):
     def run(self):
+        self.run_command('build_ext')
         develop.run(self)
         self.make_jit_include_symlinks()
 
@@ -78,8 +91,20 @@ if __name__ == '__main__':
                 'include/cutlass/**/*',
             ]
         },
+        ext_modules=[
+            CUDAExtension(
+                name="deepgemm_runtime",
+                sources=["csrc/deepgemm_runtime.cu"],
+                extra_compile_args={"nvcc": nvcc_compile_args},
+                libraries=["cuda"],
+                library_dirs=[cuda_lib_dir, torch_lib],
+                runtime_library_dirs=[cuda_lib_dir, torch_lib],
+                extra_link_args=[f"-Wl,-rpath,{torch_lib}"],
+            ),
+        ],
         cmdclass={
             'develop': PostDevelopCommand,
             'build_py': CustomBuildPy,
+            'build_ext': BuildExtension.with_options(use_ninja=False),
         },
     )
