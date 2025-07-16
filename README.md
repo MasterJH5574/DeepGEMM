@@ -51,22 +51,14 @@ Despite its lightweight design, DeepGEMM's performance matches or exceeds expert
 
 ```bash
 # Submodule must be cloned
-git clone --recursive git@github.com:deepseek-ai/DeepGEMM.git
+git clone --recursive https://github.com/MasterJH5574/DeepGEMM.git --branch cuda-extension --single-branch
+cd DeepGEMM
 
 # Make symbolic links for third-party (CUTLASS and CuTe) include directories
 python setup.py develop
 
-# Test JIT compilation
-python tests/test_jit.py
-
 # Test all GEMM implements (normal, contiguous-grouped and masked-grouped)
 python tests/test_core.py
-```
-
-### Installation
-
-```bash
-python setup.py install
 ```
 
 Then, import `deep_gemm` in your Python project, and enjoy!
