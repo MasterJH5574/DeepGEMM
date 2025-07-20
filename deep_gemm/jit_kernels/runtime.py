@@ -4,6 +4,7 @@ import os
 from typing import Any, Dict, Tuple
 
 import cuda.bindings.driver as cbd
+from torch.ops import deepgemm_runtime
 import torch
 
 from ..jit.runtime import Runtime
@@ -182,98 +183,7 @@ static void __instantiate_kernel() {{
     # noinspection PyMethodOverriding
     @staticmethod
     def launch(kernel, args) -> cbd.CUresult:
-        # def launch(kernel, kwargs: Dict[str, Any]) -> cbd.CUresult:
-        # torch.cuda.nvtx.range_push("import deepgemm_runtime")
-        import deepgemm_runtime
-
-        # torch.cuda.nvtx.range_pop()
-        # f_launch = kwargs["F_LAUNCH"]
-        # print(f"Start launch, kernel: {hex(kernel)}")
-        # torch.cuda.nvtx.range_push("launch kernel")
-        deepgemm_runtime.launch_fp8_gemm(
-            kernel,
-            *args,
-            # kwargs['A'],
-            # kwargs['B'],
-            # kwargs['D'],
-            # kwargs['SCALES_A'],
-            # kwargs['SCALES_B'],
-            # kwargs['GROUPED_LAYOUT'],
-            # kwargs['M'],
-            # kwargs['N'],
-            # kwargs['K_UNALIGNED'],
-            # kwargs['MN'],
-            # kwargs['STRIDE_AM'],
-            # kwargs['STRIDE_BN'],
-            # kwargs['STRIDE_DM'],
-            # kwargs['BLOCK_M'],
-            # kwargs['BLOCK_N'],
-            # kwargs['BLOCK_K'],
-            # kwargs['BLOCK_MN'],
-            # kwargs['NUM_GROUPS'],
-            # kwargs['SWIZZLE_D_MODE'],
-            # kwargs['NUM_SMS'],
-            # kwargs['NUM_TMA_MULTICAST'],
-            # kwargs['SMEM_SIZE'],
-            # kwargs['DEVICE_INDEX'],
-            # kwargs['STREAM'],
-        )
-        # torch.cuda.nvtx.range_pop()
-        # print(f"End launch")
-        # num_tma_threads = 128
-        # num_math_threads_per_group = 128
-
-        # torch.cuda.nvtx.range_push("set max dynamic shared memory size")
-        # result = cbd.cuKernelSetAttribute(cbd.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-        #                                   kwargs['SMEM_SIZE'], kernel, cbd.CUdevice(kwargs['DEVICE_INDEX']))[0]
-        # assert result == cbd.CUresult.CUDA_SUCCESS, f'Failed to set max dynamic shared memory size: {result}'
-        # torch.cuda.nvtx.range_pop()
-
-        # torch.cuda.nvtx.range_push("set cluster dimension")
-        # attr_val = cbd.CUlaunchAttributeValue()
-        # attr_val.clusterDim.x = kwargs['NUM_TMA_MULTICAST']
-        # attr_val.clusterDim.y = 1
-        # attr_val.clusterDim.z = 1
-        # attr = cbd.CUlaunchAttribute()
-        # attr.id = cbd.CUlaunchAttributeID.CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION
-        # attr.value = attr_val
-        # torch.cuda.nvtx.range_pop()
-
-        # torch.cuda.nvtx.range_push("set launch config")
-        # config = cbd.CUlaunchConfig()
-        # config.numAttrs = 1
-        # config.attrs = [attr]
-        # config.gridDimX = kwargs['NUM_SMS']
-        # config.gridDimY = 1
-        # config.gridDimZ = 1
-        # config.blockDimX = get_num_threads_per_sm(num_tma_threads, num_math_threads_per_group, kwargs['BLOCK_M'])
-        # config.blockDimY = 1
-        # config.blockDimZ = 1
-        # config.sharedMemBytes = kwargs['SMEM_SIZE']
-        # config.hStream = kwargs['STREAM']
-        # torch.cuda.nvtx.range_pop()
-
-        # torch.cuda.nvtx.range_push("set launch kernel")
-        # arg_values = (
-        #     kwargs['SCALES_B'].data_ptr(),
-        #     kwargs['GROUPED_LAYOUT'].data_ptr(),
-        #     kwargs['M'],
-        #     kwargs['TENSOR_MAP_A'],
-        #     kwargs['TENSOR_MAP_B'],
-        #     kwargs['TENSOR_MAP_SCALES_A'],
-        #     kwargs['TENSOR_MAP_D'],
-        # )
-        # arg_types = (
-        #     ctypes.c_void_p,
-        #     ctypes.c_void_p,
-        #     ctypes.c_uint32,
-        #     None,
-        #     None,
-        #     None,
-        #     None,
-        # )
-        # torch.cuda.nvtx.range_pop()
-        # return cbd.cuLaunchKernelEx(config, kernel, (arg_values, arg_types), 0)
+        return deepgemm_runtime.launch_fp8_gemm(kernel, *args)
 
 
 class FP8WGradGemmRuntime(Runtime):
@@ -320,55 +230,4 @@ static void __instantiate_kernel() {{
     # noinspection PyMethodOverriding
     @staticmethod
     def launch(kernel, args) -> cbd.CUresult:
-        # torch.cuda.nvtx.range_push("import deepgemm_runtime")
-        import deepgemm_runtime
-
-        # torch.cuda.nvtx.range_pop()
-        # torch.cuda.nvtx.range_push("launch kernel")
-        deepgemm_runtime.launch_wgrad_fp8_gemm(kernel, *args)
-        # torch.cuda.nvtx.range_pop()
-
-        # num_tma_threads = 128
-        # num_math_threads_per_group = 128
-
-        # result = cbd.cuKernelSetAttribute(cbd.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-        #                                   kwargs['SMEM_SIZE'], kernel, cbd.CUdevice(kwargs['DEVICE_INDEX']))[0]
-        # assert result == cbd.CUresult.CUDA_SUCCESS, f'Failed to set max dynamic shared memory size: {result}'
-
-        # attr_val = cbd.CUlaunchAttributeValue()
-        # attr_val.clusterDim.x = kwargs['NUM_TMA_MULTICAST']
-        # attr_val.clusterDim.y = 1
-        # attr_val.clusterDim.z = 1
-        # attr = cbd.CUlaunchAttribute()
-        # attr.id = cbd.CUlaunchAttributeID.CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION
-        # attr.value = attr_val
-
-        # config = cbd.CUlaunchConfig()
-        # config.numAttrs = 1
-        # config.attrs = [attr]
-        # config.gridDimX = kwargs['NUM_SMS']
-        # config.gridDimY = 1
-        # config.gridDimZ = 1
-        # config.blockDimX = get_num_threads_per_sm(num_tma_threads, num_math_threads_per_group, kwargs['BLOCK_M'])
-        # config.blockDimY = 1
-        # config.blockDimZ = 1
-        # config.sharedMemBytes = kwargs['SMEM_SIZE']
-        # config.hStream = kwargs['STREAM']
-
-        # arg_values = (
-        #     kwargs['K'],
-        #     kwargs['TENSOR_MAP_A'],
-        #     kwargs['TENSOR_MAP_B'],
-        #     kwargs['TENSOR_MAP_SCALES_A'],
-        #     kwargs['TENSOR_MAP_SCALES_B'],
-        #     kwargs['TENSOR_MAP_D'],
-        # )
-        # arg_types = (
-        #     ctypes.c_uint32,
-        #     None,
-        #     None,
-        #     None,
-        #     None,
-        #     None,
-        # )
-        # return cbd.cuLaunchKernelEx(config, kernel, (arg_values, arg_types), 0)
+        return deepgemm_runtime.launch_wgrad_fp8_gemm(kernel, *args)

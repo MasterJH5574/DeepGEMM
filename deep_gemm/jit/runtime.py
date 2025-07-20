@@ -3,6 +3,7 @@ import subprocess
 import time
 import torch
 import cuda.bindings.driver as cbd
+from torch.ops import deepgemm_runtime
 
 from typing import Any, Dict, Optional, Type
 from torch.utils.cpp_extension import CUDA_HOME
@@ -33,11 +34,9 @@ class Runtime:
     def launch(kernel: cbd.CUkernel, kwargs: Dict[str, Any]) -> cbd.CUresult:
         raise NotImplemented
 
-    def __call__(self, *args, **kwargs) -> cbd.CUresult:
+    def __call__(self, *args):
         # Load CUBIN
-        # torch.cuda.nvtx.range_push("load cubin")
         if self.kernel is None:
-            import deepgemm_runtime
             start_time = time.time_ns()
 
             # Load CUBIN
@@ -55,27 +54,14 @@ class Runtime:
             assert len(kernel_names) == 1, f'Too many kernels in the library: {kernel_names}'
 
             self.kernel = deepgemm_runtime.load_kernel(path, kernel_names[0])
-            # result, self.lib = cbd.cuLibraryLoadFromFile(path, [], [], 0, [], [], 0)
-            # assert result == cbd.CUresult.CUDA_SUCCESS, f'Failed to load library: {result}'
-            # # Load kernel from the library
-            # result, self.kernel = cbd.cuLibraryGetKernel(self.lib, bytes(kernel_names[0], encoding='utf-8'))
-            # assert result == cbd.CUresult.CUDA_SUCCESS, f'Failed to load kernel: {result}'
 
             end_time = time.time_ns()
             elapsed_time = (end_time - start_time) / 1e6
             if int(os.getenv('DG_JIT_DEBUG', 0)):
                 print(f'Loading JIT runtime {self.path} took {elapsed_time:.2f} ms.')
-        # torch.cuda.nvtx.range_pop()
 
         # noinspection PyArgumentList
-        if len(args) > 0:
-            # torch.cuda.nvtx.range_push("runtime launch with args")
-            self.launch(self.kernel, args)
-            # torch.cuda.nvtx.range_pop()
-        else:
-            # torch.cuda.nvtx.range_push("runtime launch with kwargs")
-            self.launch(self.kernel, kwargs)
-            # torch.cuda.nvtx.range_pop()
+        return self.launch(self.kernel, args)
 
     def __del__(self) -> None:
         if self.lib is not None:

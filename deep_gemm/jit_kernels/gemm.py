@@ -4,12 +4,8 @@ from functools import lru_cache
 from typing import Tuple, Optional, Dict
 
 from ..jit import build
-from .runtime import (
-    Runtime,
-    FP8GemmRuntime, GemmType,
-    make_2d_tma_a_desc, make_2d_tma_b_desc,
-    make_2d_tma_d_desc, make_2d_tma_scales_desc)
-from .utils import get_num_sms, ceil_div, get_col_major_tma_aligned_tensor, get_m_alignment_for_contiguous_layout
+from .runtime import Runtime, FP8GemmRuntime, GemmType
+from .utils import get_num_sms, ceil_div, get_m_alignment_for_contiguous_layout
 
 
 def is_tma_multicast_legal(shape_dim: int, block_dim: int, num_tma_multicast: int, num_sms: int,
@@ -151,10 +147,10 @@ def get_best_configs(m: int, n: int, k: int, num_groups: int, num_sms: int,
     return num_min_sms, best_block_m, best_block_n, best_num_stages, best_tma_multicast_config, best_smem_config
 
 
+# @torch.compiler.disable
 def gemm_fp8_fp8_bf16_nt(lhs: Tuple[torch.Tensor, torch.Tensor],
                          rhs: Tuple[torch.Tensor, torch.Tensor],
-                         out: torch.Tensor,
-                         runtime_cache: Optional[Dict[str, Runtime]] = None) -> None:
+                         runtime_cache: Optional[Dict[str, Runtime]] = None) -> torch.Tensor:
     """
     Perform a normal GEMM with FP8 inputs and BF16 output, with 1x128 LHS scaling and 128x128 RHS scaling.
 
@@ -172,116 +168,24 @@ def gemm_fp8_fp8_bf16_nt(lhs: Tuple[torch.Tensor, torch.Tensor],
              the second element is an FP32 128x128 scaling tensor for RHS of shape `[⌈n / 128⌉, ⌈k / 128⌉]`.
         out: the BF16 output tensor of shape `[m, n]`, representing the result.
     """
-    # torch.cuda.nvtx.range_push("gemm_fp8_fp8_bf16_nt")
     lhs, lhs_scales = lhs
     rhs, rhs_scales = rhs
     m, k = lhs.shape
-    n, k_ = rhs.shape
-    m_, n_ = out.shape
-
-    # Type and shape checks
-    assert m == m_ and n == n_ and k == k_
-    assert n > 0 and k > 0
-    assert lhs_scales.shape == (m, ceil_div(k, 128))
-    assert rhs_scales.shape == (ceil_div(n, 128), ceil_div(k, 128))
-    assert lhs.dtype == torch.float8_e4m3fn and lhs_scales.dtype == torch.float32
-    assert rhs.dtype == torch.float8_e4m3fn and rhs_scales.dtype == torch.float32
-    assert out.dtype == torch.bfloat16
-    assert lhs.stride(1) == 1 and out.stride(1) == 1 and rhs.stride(1) == 1
-
-    # LHS scales must be transposed for TMA loads, but not for RHS scales
-    # NOTES: `get_col_major_tma_aligned_tensor` may launch a kernel if not processed by previous kernels
-    # torch.cuda.nvtx.range_push("get_col_major_tma_aligned_tensor")
-    # lhs_scales = get_col_major_tma_aligned_tensor(lhs_scales)
-    # torch.cuda.nvtx.range_pop()
-    assert rhs_scales.is_contiguous()
-
-    # Do nothing if `m` is zero
-    if m == 0:
-        return
-
-    # K must be aligned to 128
+    n, _ = rhs.shape
     aligned_k = ceil_div(k, 128) * 128
 
     # Auto-tuning with compilation
-    # torch.cuda.nvtx.range_push("get_num_sms")
     num_sms = get_num_sms()
-    # torch.cuda.nvtx.range_pop()
-    # torch.cuda.nvtx.range_push("get_best_configs")
     num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(m, n, k, 1, num_sms)
-    # torch.cuda.nvtx.range_pop()
     block_k = 128
     num_tma_threads = 128
     num_math_threads_per_group = 128
 
-    # torch.cuda.nvtx.range_push("make_2d_tma_desc")
-    # tensor_map_a = make_2d_tma_a_desc(GemmType.Normal, lhs, m, k, lhs.stride(0), block_m, block_k, 1)
-    # tensor_map_b = make_2d_tma_b_desc(GemmType.Normal, rhs, n, k, rhs.stride(0), block_n, block_k, 1)
-    # tensor_map_d = make_2d_tma_d_desc(GemmType.Normal, out, m, n, out.stride(0), block_m, block_n, 1, smem_config[1])
-    # tensor_map_scales_a = make_2d_tma_scales_desc(GemmType.Normal, lhs_scales, m, k, block_m, block_k, 1)
-    # torch.cuda.nvtx.range_pop()
-
-    # import deepgemm_runtime  # Lazy import
-
-    # torch.cuda.nvtx.range_push("prepare grouped_layout")
-    grouped_layout = torch.empty(0, dtype=torch.int32, device=out.device)
-    # torch.cuda.nvtx.range_pop()
-    # torch.cuda.nvtx.range_push("prepare stream")
-    stream = torch.cuda.current_stream().cuda_stream
-    # torch.cuda.nvtx.range_pop()
-
-    # kwargs = {
-    #     # Templated arguments
-    #     'GEMM_TYPE': GemmType.Normal,
-    #     'NUM_TMA_THREADS': num_tma_threads,
-    #     'NUM_MATH_THREADS_PER_GROUP': num_math_threads_per_group,
-    #     'M': m, 'N': n, 'K': aligned_k, 'K_UNALIGNED': k, "MN": m,
-    #     'NUM_GROUPS': 1,
-    #     'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k, 'BLOCK_MN': block_m,
-    #     'STRIDE_AM': lhs.stride(0), 'STRIDE_BN': rhs.stride(0), 'STRIDE_DM': out.stride(0),
-    #     'SWIZZLE_D_MODE': smem_config[1],
-    #     'BLOCK_N_PADDING': smem_config[2],
-    #     'NUM_STAGES': num_stages,
-    #     'NUM_TMA_MULTICAST': tma_multicast_config[0],
-    #     'IS_TMA_MULTICAST_ON_A': tma_multicast_config[1],
-    #     # Runtime arguments
-    #     'A': lhs,
-    #     'B': rhs,
-    #     'D': out,
-    #     'SCALES_A': lhs_scales,
-    #     'SCALES_B': rhs_scales,
-    #     'GROUPED_LAYOUT': grouped_layout,
-    #     'NUM_SMS': num_sms,
-    #     'SMEM_SIZE': smem_config[0],
-    #     # 'TENSOR_MAP_A': tensor_map_a,
-    #     # 'TENSOR_MAP_B': tensor_map_b,
-    #     # 'TENSOR_MAP_SCALES_A': tensor_map_scales_a,
-    #     # 'TENSOR_MAP_D': tensor_map_d,
-    #     'STREAM': stream,
-    #     'DEVICE_INDEX': out.device.index,
-    #     'F_LAUNCH': deepgemm_runtime.launch_fp8_gemm,
-    # }
-
-    # torch.cuda.nvtx.range_push("generate")
-    # Generate, build and run the kernel
     code = FP8GemmRuntime.generate(n, aligned_k, block_m, block_n, block_k, smem_config[2], smem_config[1], 1, num_stages, num_tma_threads, num_math_threads_per_group, tma_multicast_config[0], tma_multicast_config[1], GemmType.Normal)
-    # torch.cuda.nvtx.range_pop()
-    # if runtime_cache is not None:
-    #     assert code in runtime_cache
     if runtime_cache is not None and code in runtime_cache:
-        # torch.cuda.nvtx.range_push("fetch cache")
         runtime = runtime_cache[code]
-        # torch.cuda.nvtx.range_pop()
     else:
-        # torch.cuda.nvtx.range_push("build")
         runtime = build('gemm_fp8_fp8_bf16_nt', code, FP8GemmRuntime)
-        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
-        print(f"[rank{rank}] build gemm code: m={m}, n={n}, k={k}")
         if runtime_cache is not None:
             runtime_cache[code] = runtime
-        # torch.cuda.nvtx.range_pop()
-    # torch.cuda.nvtx.range_push("invoke runtime")
-    runtime(lhs, rhs, out, lhs_scales, rhs_scales, grouped_layout, m, n, k, lhs.stride(0), rhs.stride(0), out.stride(0), block_m, block_n, block_k, 1, smem_config[1], num_sms, tma_multicast_config[0], smem_config[0], out.device.index, stream)
-    # torch.compiler.disable(runtime)(**kwargs)
-    # torch.cuda.nvtx.range_pop()
-    # torch.cuda.nvtx.range_pop()
+    return runtime(lhs, rhs, lhs_scales, rhs_scales, block_m, block_n, block_k, 1, smem_config[1], num_sms, tma_multicast_config[0], smem_config[0])
