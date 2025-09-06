@@ -182,8 +182,14 @@ static void __instantiate_kernel() {{
 
     # noinspection PyMethodOverriding
     @staticmethod
-    def launch(kernel, args) -> cbd.CUresult:
+    def launch(kernel, args):
         return deepgemm_runtime.launch_fp8_gemm(kernel, *args)
+
+
+class FP8GroupGemmRuntime(FP8GemmRuntime):
+    @staticmethod
+    def launch(kernel, args):
+        return deepgemm_runtime.launch_m_grouped_fp8_gemm(kernel, *args)
 
 
 class FP8WGradGemmRuntime(Runtime):

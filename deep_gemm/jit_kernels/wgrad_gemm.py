@@ -9,6 +9,7 @@ from .utils import ceil_div, get_num_sms
 # @torch.compiler.disable
 def wgrad_gemm_fp8_fp8_fp32_nt(lhs: Tuple[torch.Tensor, torch.Tensor],
                                rhs: Tuple[torch.Tensor, torch.Tensor],
+                               out: torch.Tensor,
                                runtime_cache: Optional[Dict[str, Runtime]] = None) -> torch.Tensor:
     """
     Perform a weight gradient GEMM with FP8 inputs and FP32 output, with 1x128 LHS scaling and 1x128 RHS scaling.
@@ -64,7 +65,7 @@ def wgrad_gemm_fp8_fp8_fp32_nt(lhs: Tuple[torch.Tensor, torch.Tensor],
         runtime = build('wgrad_gemm_fp8_fp8_fp32_nt', code, FP8WGradGemmRuntime)
         if runtime_cache is not None:
             runtime_cache[code] = runtime
-    return runtime(lhs, rhs, lhs_scales, rhs_scales, block_m, block_n, block_k, 1, smem_config[1], num_sms, tma_multicast_config[0], smem_config[0])
+    return runtime(lhs, rhs, lhs_scales, rhs_scales, out, block_m, block_n, block_k, 1, smem_config[1], num_sms, tma_multicast_config[0], smem_config[0])
 
 
 def k_grouped_wgrad_gemm_fp8_fp8_fp32_nt(lhs: Tuple[torch.Tensor, torch.Tensor],

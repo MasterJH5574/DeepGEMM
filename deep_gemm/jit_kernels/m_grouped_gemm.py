@@ -1,18 +1,19 @@
+from typing import Dict, Optional, Tuple
+
 import torch
-from typing import Tuple
 
 from ..jit import build
 from .gemm import get_best_configs
-from .runtime import (
-    FP8GemmRuntime, GemmType,
-    make_2d_tma_a_desc, make_2d_tma_b_desc,
-    make_2d_tma_d_desc, make_2d_tma_scales_desc)
+from .runtime import (Runtime, FP8GemmRuntime, FP8GroupGemmRuntime, GemmType, make_2d_tma_a_desc,
+                      make_2d_tma_b_desc, make_2d_tma_d_desc,
+                      make_2d_tma_scales_desc)
 from .utils import ceil_div, get_col_major_tma_aligned_tensor, get_num_sms
 
 
 def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(lhs: Tuple[torch.Tensor, torch.Tensor],
                                               rhs: Tuple[torch.Tensor, torch.Tensor],
-                                              out: torch.Tensor, m_indices: torch.Tensor) -> None:
+                                              m_indices: torch.Tensor,
+                                              runtime_cache: Optional[Dict[str, Runtime]] = None) -> torch.Tensor:
     """
     Perform a grouped GEMM (contiguous format) with FP8 inputs and BF16 output, with 1x128 LHS scaling and 128x128 RHS scaling.
 
@@ -38,28 +39,7 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(lhs: Tuple[torch.Tensor, torch.Ten
     lhs, lhs_scales = lhs
     rhs, rhs_scales = rhs
     m, k = lhs.shape
-    num_groups, n, k_ = rhs.shape
-    m_, n_ = out.shape
-    m__ = m_indices.numel()
-
-    # Type and shape checks
-    assert m == m_ == m__ and k == k_ and n == n_
-    assert lhs_scales.shape == (m, ceil_div(k, 128))
-    assert rhs_scales.shape == (num_groups, ceil_div(n, 128), ceil_div(k, 128))
-    assert lhs.dtype == torch.float8_e4m3fn and lhs_scales.dtype == torch.float32
-    assert rhs.dtype == torch.float8_e4m3fn and rhs_scales.dtype == torch.float32
-    assert out.dtype == torch.bfloat16
-    assert m_indices.dtype == torch.int32
-    assert lhs.is_contiguous() and rhs.is_contiguous()
-    assert out.is_contiguous() and m_indices.is_contiguous()
-
-    # LHS scales must be transposed for TMA load, but not for RHS scales
-    lhs_scales = get_col_major_tma_aligned_tensor(lhs_scales)
-    assert rhs_scales.is_contiguous()
-
-    # Do nothing if `m` is zero
-    if m == 0:
-        return
+    num_groups, n, _ = rhs.shape
 
     # Auto-tuning with compilation
     num_sms = get_num_sms()
@@ -69,41 +49,14 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(lhs: Tuple[torch.Tensor, torch.Ten
     num_tma_threads = 128
     num_math_threads_per_group = 128
 
-    tensor_map_a = make_2d_tma_a_desc(GemmType.GroupedContiguous, lhs, m, k, k, block_m, block_k, num_groups)
-    tensor_map_b = make_2d_tma_b_desc(GemmType.GroupedContiguous, rhs, n, k, k, block_n, block_k, num_groups)
-    tensor_map_d = make_2d_tma_d_desc(GemmType.GroupedContiguous, out, m, n, n, block_m, block_n, num_groups, smem_config[1])
-    tensor_map_scales_a = make_2d_tma_scales_desc(GemmType.GroupedContiguous, lhs_scales, m, k, block_m, block_k, num_groups)
-
-    kwargs = {
-        # Templated arguments
-        'NUM_TMA_THREADS': num_tma_threads,
-        'NUM_MATH_THREADS_PER_GROUP': num_math_threads_per_group,
-        'M': m, 'N': n, 'K': k,
-        'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k,
-        'SWIZZLE_D_MODE': smem_config[1],
-        'BLOCK_N_PADDING': smem_config[2],
-        'NUM_GROUPS': num_groups,
-        'NUM_STAGES': num_stages,
-        'NUM_TMA_MULTICAST': tma_multicast_config[0],
-        'IS_TMA_MULTICAST_ON_A': tma_multicast_config[1],
-        'GEMM_TYPE': GemmType.GroupedContiguous,
-        # Runtime arguments
-        'SCALES_B': rhs_scales,
-        'GROUPED_LAYOUT': m_indices,
-        'NUM_SMS': num_sms,
-        'SMEM_SIZE': smem_config[0],
-        'TENSOR_MAP_A': tensor_map_a,
-        'TENSOR_MAP_B': tensor_map_b,
-        'TENSOR_MAP_SCALES_A': tensor_map_scales_a,
-        'TENSOR_MAP_D': tensor_map_d,
-        'STREAM': torch.cuda.current_stream().cuda_stream,
-        'DEVICE_INDEX': out.device.index
-    }
-
-    # Generate, build and run the kernel
-    code = FP8GemmRuntime.generate(kwargs)
-    runtime = build('m_grouped_gemm_fp8_fp8_bf16_nt', code, FP8GemmRuntime, kwargs)
-    runtime(**kwargs)
+    code = FP8GroupGemmRuntime.generate(n, k, block_m, block_n, block_k, smem_config[2], smem_config[1], num_groups, num_stages, num_tma_threads, num_math_threads_per_group, tma_multicast_config[0], tma_multicast_config[1], GemmType.GroupedContiguous)
+    if runtime_cache is not None and code in runtime_cache:
+        runtime = runtime_cache[code]
+    else:
+        runtime = build('m_grouped_gemm_fp8_fp8_bf16_nt', code, FP8GroupGemmRuntime)
+        if runtime_cache is not None:
+            runtime_cache[code] = runtime
+    return runtime(lhs, rhs, lhs_scales, rhs_scales, m_indices, block_m, block_n, block_k, num_groups, smem_config[1], num_sms, tma_multicast_config[0], smem_config[0])
 
 
 def m_grouped_gemm_fp8_fp8_bf16_nt_masked(lhs: Tuple[torch.Tensor, torch.Tensor],

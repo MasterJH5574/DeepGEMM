@@ -20,14 +20,18 @@ torch.ops.load_library(deepgemm_runtime.__file__)
 
 # fmt: off
 @torch.library.register_fake("deepgemm_runtime::launch_fp8_gemm")
-def _(kernel_handle, a, b, scales_a, scales_b, block_m, block_n, block_k, num_groups, d_swizzle_mode, num_sms, num_tma_multicast, smem_size) -> None:
+def _launch_fp8_gemm(kernel_handle, a, b, scales_a, scales_b, block_m, block_n, block_k, num_groups, d_swizzle_mode, num_sms, num_tma_multicast, smem_size) -> torch.Tensor:
     m, _ = a.shape
     n, _ = b.shape
     return torch.empty((m, n), device=a.device, dtype=torch.bfloat16)
 
-@torch.library.register_fake("deepgemm_runtime::launch_wgrad_fp8_gemm")
-def _(kernel_handle, a, b, scales_a, scales_b, block_m, block_n, block_k, num_groups, d_swizzle_mode, num_sms, num_tma_multicast, smem_size) -> None:
+@torch.library.register_fake("deepgemm_runtime::launch_m_grouped_fp8_gemm")
+def _launch_m_grouped_fp8_gemm(kernel_handle, a, b, scales_a, scales_b, grouped_layout, block_m, block_n, block_k, num_groups, d_swizzle_mode, num_sms, num_tma_multicast, smem_size) -> torch.Tensor:
     m, _ = a.shape
-    n, _ = b.shape
-    return torch.zeros((m, n), device=a.device, dtype=torch.float32)
+    _, n, _ = b.shape
+    return torch.empty((m, n), device=a.device, dtype=torch.bfloat16)
+
+@torch.library.register_fake("deepgemm_runtime::launch_wgrad_fp8_gemm")
+def _launch_wgrad_fp8_gemm(kernel_handle, a, b, scales_a, scales_b, d, block_m, block_n, block_k, num_groups, d_swizzle_mode, num_sms, num_tma_multicast, smem_size) -> None:
+    return
 # fmt: on
