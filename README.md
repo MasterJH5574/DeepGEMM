@@ -55,7 +55,7 @@ git clone --recursive https://github.com/MasterJH5574/DeepGEMM.git --branch cuda
 cd DeepGEMM
 
 # Make symbolic links for third-party (CUTLASS and CuTe) include directories
-python setup.py develop
+uv pip install -e . --no-build-isolation
 
 # Test all GEMM implements (normal, contiguous-grouped and masked-grouped)
 python tests/test_core.py
